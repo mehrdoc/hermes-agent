@@ -3218,6 +3218,12 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    sudo_stdin, sudo_desc = _check_sudo_stdin_guard(command)
+    if sudo_stdin:
+        logger.warning("Sudo stdin block: %s (command: %s)",
+                       sudo_desc, command[:200])
+        return _sudo_stdin_block_result(sudo_desc)
+
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo bypass — a deny rule is the
     # user saying "never, even under yolo".

@@ -289,9 +289,10 @@ class TestPreauthNeverOutranksHardBlocks:
         monkeypatch.delenv("SUDO_PASSWORD", raising=False)
         command = "sudo -S systemctl restart hermes-gateway"
         preauth_config(preauthorized=[command])
-        result = mod.check_all_command_guards(command, "local")
-        assert result["approved"] is False
-        assert "sudo" in result["message"].lower()
+        for guard in (mod.check_dangerous_command, mod.check_all_command_guards):
+            result = guard(command, "local")
+            assert result["approved"] is False, guard.__name__
+            assert "sudo" in result["message"].lower(), guard.__name__
 
     def test_tirith_finding_still_prompts_for_preauthorized_command(
             self, preauth_config, clean_env, interactive_cli, monkeypatch):
