@@ -111,13 +111,21 @@ export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): S
   return keys
 }
 
-/** Add a provider's curated default model keys (top-N collapsed families) to
- *  `target`. Shared by `defaultVisibleKeys` and `resolveVisibleKeys` so the
+/** Add a provider's curated default model keys to `target`. Prefers the
+ *  backend's `featured_models` shortlist (one flagship per lab) for aggregator
+ *  providers that would otherwise flood the default view with dozens of models;
+ *  falls back to the top-N collapsed families when a provider ships no featured
+ *  list. Shared by `defaultVisibleKeys` and `resolveVisibleKeys` so the
  *  expansion rule lives in exactly one place. */
 function expandProviderDefaults(provider: ModelOptionProvider, target: Set<string>): void {
   const families = collapseModelFamilies(provider.models ?? [])
 
-  for (const family of families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
+  const featured = provider.featured_models ?? []
+  const defaults = featured.length
+    ? families.filter(family => featured.includes(family.id))
+    : families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)
+
+  for (const family of defaults) {
     target.add(modelVisibilityKey(provider.slug, family.id))
   }
 }
