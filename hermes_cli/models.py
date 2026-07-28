@@ -101,6 +101,28 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 
+# Curated "flagship per lab" shortlist. Aggregator providers (nous,
+# openrouter) serve dozens of models across many labs; pickers default their
+# visible set to these so the list isn't every-model-under-the-sun, while the
+# rest stay reachable via search / show-all. Ids are the base vendor/model
+# form shared by both aggregator catalogs. Surfaced in the model catalog
+# manifest as ``"featured": true`` (see scripts/build_model_catalog.py) and
+# consumed via model_catalog.get_featured_models(). Keep to ~one strong model
+# per lab so no lab drops out of the default view.
+FEATURED_MODEL_IDS: tuple[str, ...] = (
+    "anthropic/claude-opus-5",
+    "anthropic/claude-sonnet-5",
+    "openai/gpt-5.6-sol",
+    "google/gemini-3.1-pro-preview",
+    "x-ai/grok-4.5",
+    "deepseek/deepseek-v4-pro",
+    "qwen/qwen3.7-max",
+    "moonshotai/kimi-k3",
+    "minimax/minimax-m3",
+    "z-ai/glm-5.2",
+)
+
+
 
 
 def _codex_curated_models() -> list[str]:

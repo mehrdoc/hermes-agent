@@ -34,6 +34,7 @@ sys.path.insert(0, REPO_ROOT)
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
 
 from hermes_cli.models import (  # noqa: E402
+    FEATURED_MODEL_IDS,
     OPENROUTER_MODELS,
     PREFERRED_SILENT_DEFAULT_MODEL,
     _PROVIDER_MODELS,
@@ -42,12 +43,16 @@ from hermes_cli.models import (  # noqa: E402
 OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "model-catalog.json")
 CATALOG_VERSION = 1
 
+_FEATURED = frozenset(FEATURED_MODEL_IDS)
+
 
 def _openrouter_entry(mid: str, desc: str) -> dict:
     entry: dict = {"id": mid, "description": desc}
     if mid == PREFERRED_SILENT_DEFAULT_MODEL:
         entry["description"] = desc or "default"
         entry["default"] = True
+    if mid in _FEATURED:
+        entry["featured"] = True
     return entry
 
 
@@ -55,6 +60,8 @@ def _nous_entry(mid: str) -> dict:
     entry: dict = {"id": mid}
     if mid == PREFERRED_SILENT_DEFAULT_MODEL:
         entry["default"] = True
+    if mid in _FEATURED:
+        entry["featured"] = True
     return entry
 
 
@@ -74,7 +81,10 @@ def build_catalog() -> dict:
                         "Descriptions drive picker badges. Live /api/v1/models "
                         "filters curated ids by tool-calling support and free pricing. "
                         'The entry labeled "default": true is the model Hermes '
-                        "silently lands on when the user never picked one."
+                        "silently lands on when the user never picked one. "
+                        'Entries labeled "featured": true are the curated shortlist '
+                        "pickers show by default (one flagship per lab); the rest "
+                        "stay reachable via search / show-all."
                     ),
                 },
                 "models": [
@@ -89,7 +99,10 @@ def build_catalog() -> dict:
                         "Free-tier gating is determined live via Portal pricing "
                         "(partition_nous_models_by_tier), not this manifest. "
                         'The entry labeled "default": true is the model Hermes '
-                        "silently lands on when the user never picked one."
+                        "silently lands on when the user never picked one. "
+                        'Entries labeled "featured": true are the curated shortlist '
+                        "pickers show by default (one flagship per lab); the rest "
+                        "stay reachable via search / show-all."
                     ),
                 },
                 "models": [
