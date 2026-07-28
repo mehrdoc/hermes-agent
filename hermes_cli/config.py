@@ -2824,6 +2824,22 @@ DEFAULT_CONFIG = {
         #     - "git push --force*"
         #     - "*curl*|*sh*"
         "deny": [],
+        # Operator-preauthorized command shapes: operations already ratified
+        # out of band, so the agent does not die at a second approval prompt
+        # nobody is present to answer. A match satisfies the interactive
+        # dangerous-command prompt and NOTHING else — it is consulted below
+        # the hardline floor, the sudo-stdin guard and `deny`, and never
+        # suppresses a Tirith content finding. Matching is exact, anchored
+        # argv equality (case-sensitive, no globs, no prefixes); commands with
+        # any shell syntax (separators, redirects, substitution, expansion,
+        # globs, quotes) are ineligible, so write absolute paths. Nothing in
+        # Hermes ever writes this key — it is operator-authored, which is what
+        # makes it auditable. See
+        # docs/security/operator-preauthorized-commands.md. Example:
+        #   preauthorized:
+        #     - systemctl restart hermes-gateway
+        #     - [docker, compose, up, -d]
+        "preauthorized": [],
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

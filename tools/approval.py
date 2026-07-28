@@ -600,6 +600,159 @@ def _sudo_stdin_block_result(description: str) -> dict:
 
 
 # =========================================================================
+# Operator-preauthorized command shapes (approvals.preauthorized)
+# =========================================================================
+# ``approvals.preauthorized`` is an operator-authored list of command shapes
+# already ratified out of band ("yes, restart the gateway"), so the agent does
+# not die at a second approval prompt nobody is there to answer.
+#
+# It satisfies EXACTLY ONE requirement: the interactive human-approval prompt
+# raised by dangerous-pattern detection. It is consulted strictly BELOW the
+# hardline floor, the sudo-stdin guard and ``approvals.deny``, and it never
+# suppresses a tirith content finding — a preauthorized *shape* says nothing
+# about the *content* flowing through it. See
+# docs/security/operator-preauthorized-commands.md.
+#
+# Unlike ``command_allowlist``, nothing in Hermes ever writes this key: no
+# prompt answer, no ``[a]lways``, no agent-reachable path. That is what makes
+# it auditable.
+
+# Positive character allowlist for a preauthorizable command — deliberately
+# NOT a metacharacter blocklist. The guard's job is to guarantee the argv we
+# compared is the argv the shell will execute, so anything that separates,
+# redirects, substitutes, expands, globs, quotes or escapes at execution time
+# makes a command ineligible. A blocklist is a race against shell syntax; this
+# is auditable by inspection. Rejecting is always safe: an ineligible command
+# simply falls through to the normal approval prompt.
+_PREAUTH_SAFE_COMMAND_RE = re.compile(r"[A-Za-z0-9_./:@%+=,\- \t]+")
+
+# Bounded memo so a malformed entry warns once instead of on every command.
+_PREAUTH_WARNED: set = set()
+_PREAUTH_WARNED_MAX = 256
+
+
+def _warn_preauthorized_once(entry, message: str) -> None:
+    """Log a malformed ``approvals.preauthorized`` entry at most once."""
+    key = repr(entry)[:200]
+    if key in _PREAUTH_WARNED:
+        return
+    if len(_PREAUTH_WARNED) >= _PREAUTH_WARNED_MAX:
+        _PREAUTH_WARNED.clear()
+    _PREAUTH_WARNED.add(key)
+    logger.warning("%s: %s", message, key)
+
+
+def _preauthorizable_argv(command: str) -> list | None:
+    """Reduce a command to argv, or None when it is not preauth-eligible.
+
+    Eligible means: a single simple command, non-empty, within the detector's
+    parser limits, built only from safe characters, and tokenizing into words
+    that are each a simple shell literal. Every ambiguity returns None (fail
+    closed) rather than a best-effort parse.
+    """
+    text = (command or "").strip()
+    if not text:
+        return None
+    if _command_parser_limit_exceeded(text):
+        return None
+    if not _PREAUTH_SAFE_COMMAND_RE.fullmatch(text):
+        return None
+    try:
+        argv = shlex.split(text)
+    except ValueError:
+        # Unbalanced quoting — cannot know what the shell would run.
+        return None
+    if not argv:
+        return None
+    for token in argv:
+        if not _SIMPLE_SHELL_LITERAL_RE.fullmatch(token):
+            return None
+    return argv
+
+
+def _preauthorized_entry_argv(entry) -> tuple | None:
+    """Validate one config entry into ``(argv, display)``, or None.
+
+    String entries are parsed by the SAME parser as the incoming command, so a
+    string entry and the command it authorizes cannot drift. List entries are
+    literal argv — preferred, because they cannot be parsed two ways.
+    """
+    if isinstance(entry, str):
+        argv = _preauthorizable_argv(entry)
+        if argv is None:
+            return None
+        display = entry.strip()
+    elif isinstance(entry, list):
+        if not entry:
+            return None
+        for part in entry:
+            if not isinstance(part, str) or not _SIMPLE_SHELL_LITERAL_RE.fullmatch(part):
+                return None
+        argv = list(entry)
+        # Every token is a simple literal, so join needs no quoting.
+        display = " ".join(entry)
+    else:
+        return None
+
+    # An operator cannot preauthorize a hardline command. Ordering already
+    # blocks such a command upstream; rejecting the entry means the config
+    # cannot even LOOK like it grants that authority.
+    is_hardline, _hardline_desc = detect_hardline_command(" ".join(argv))
+    if is_hardline:
+        return None
+    return argv, display
+
+
+def _match_preauthorized_command(command: str) -> str | None:
+    """Return the matching ``approvals.preauthorized`` entry, or None.
+
+    Matching is exact, anchored argv equality — same length, element by
+    element, case-SENSITIVE. There is no substring, prefix, glob or regex
+    match, and the deobfuscation variants used by the detectors are
+    deliberately not consulted: those exist to stop an attacker *hiding* a
+    command from a blocking rule, and feeding them into a *granting* rule
+    would let a crafted spelling reach a grant it was not written for.
+
+    An absent, empty, malformed or unreadable config authorizes nothing.
+    """
+    argv = _preauthorizable_argv(command)
+    if argv is None:
+        return None
+    try:
+        entries = _get_approval_config().get("preauthorized")
+    except Exception:
+        return None
+    if not isinstance(entries, list):
+        if entries:
+            _warn_preauthorized_once(
+                entries,
+                "Ignoring approvals.preauthorized: expected a list of command "
+                "shapes",
+            )
+        return None
+    for entry in entries:
+        validated = _preauthorized_entry_argv(entry)
+        if validated is None:
+            _warn_preauthorized_once(
+                entry, "Ignoring invalid approvals.preauthorized entry")
+            continue
+        entry_argv, display = validated
+        if entry_argv == argv:
+            return display
+    return None
+
+
+def _log_preauthorized_grant(entry: str, description: str) -> None:
+    """Record which config line granted an operation. A silent grant is not
+    auditable."""
+    logger.info(
+        "Preauthorized command allowed (entry: %r; "
+        "would have prompted for: %s)",
+        entry, description,
+    )
+
+
+# =========================================================================
 # Dangerous command patterns
 # =========================================================================
 
@@ -3081,6 +3234,15 @@ def check_dangerous_command(command: str, env_type: str,
     if not is_dangerous:
         return {"approved": True, "message": None}
 
+    # Operator-preauthorized shape (approvals.preauthorized): the human has
+    # already answered this prompt out of band. Consulted here — below every
+    # unconditional block above, above the human prompt below.
+    preauth_entry = _match_preauthorized_command(command)
+    if preauth_entry is not None:
+        _log_preauthorized_grant(preauth_entry, description)
+        return {"approved": True, "message": None,
+                "preauthorized": preauth_entry}
+
     return _run_approval_gate(
         pattern_key=pattern_key,
         description=description,
@@ -3527,12 +3689,23 @@ def check_all_command_guards(command: str, env_type: str,
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, tirith_desc, True))
 
+    # Operator-preauthorized shape (approvals.preauthorized) suppresses the
+    # dangerous-pattern warning ONLY. A tirith finding above is content-level
+    # — a preauthorized shape says nothing about the content flowing through
+    # it — so it still becomes a warning and still raises the prompt.
+    preauth_entry = None
     if is_dangerous:
-        if not is_approved(session_key, pattern_key):
+        preauth_entry = _match_preauthorized_command(command)
+        if preauth_entry is not None:
+            _log_preauthorized_grant(preauth_entry, description)
+        elif not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
 
     # Nothing to warn about
     if not warnings:
+        if preauth_entry is not None:
+            return {"approved": True, "message": None,
+                    "preauthorized": preauth_entry}
         return {"approved": True, "message": None}
 
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
