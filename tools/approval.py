@@ -720,10 +720,15 @@ def _match_preauthorized_command(command: str) -> str | None:
         return None
     try:
         entries = _get_approval_config().get("preauthorized")
-    except Exception:
+    except Exception as exc:
+        _warn_preauthorized_once(
+            "<config-load-error>",
+            f"Ignoring approvals.preauthorized: could not read configuration "
+            f"({type(exc).__name__})",
+        )
         return None
     if not isinstance(entries, list):
-        if entries:
+        if entries is not None:
             _warn_preauthorized_once(
                 entries,
                 "Ignoring approvals.preauthorized: expected a list of command "

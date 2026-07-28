@@ -106,11 +106,25 @@ class TestAbsenceIsNotAuthority:
         preauth_config(preauthorized={CANONICAL: True})
         assert mod._match_preauthorized_command(CANONICAL) is None
 
-    def test_config_load_failure_authorizes_nothing(self, monkeypatch):
+    @pytest.mark.parametrize("malformed", [0, "", {}])
+    def test_falsy_nonlist_value_warns_and_authorizes_nothing(
+            self, preauth_config, caplog, malformed):
+        preauth_config(preauthorized=malformed)
+        mod._PREAUTH_WARNED.clear()
+        with caplog.at_level("WARNING", logger="tools.approval"):
+            assert mod._match_preauthorized_command(CANONICAL) is None
+        assert any("expected a list" in rec.getMessage() for rec in caplog.records)
+
+    def test_config_load_failure_warns_and_authorizes_nothing(
+            self, monkeypatch, caplog):
         def boom():
             raise RuntimeError("config unavailable")
         monkeypatch.setattr(mod, "_get_approval_config", boom)
-        assert mod._match_preauthorized_command(CANONICAL) is None
+        mod._PREAUTH_WARNED.clear()
+        with caplog.at_level("WARNING", logger="tools.approval"):
+            assert mod._match_preauthorized_command(CANONICAL) is None
+        assert any("approvals.preauthorized: could not read configuration" in
+                   rec.getMessage() for rec in caplog.records)
 
     def test_empty_command_never_matches(self, preauth_config):
         preauth_config(preauthorized=[CANONICAL])
