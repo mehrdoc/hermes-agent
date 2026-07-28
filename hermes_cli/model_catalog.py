@@ -392,6 +392,46 @@ def get_default_model_from_cache(provider: str) -> str | None:
     return None
 
 
+def _featured_models_from_block(block: dict[str, Any] | None) -> list[str]:
+    """Return the ids of model entries labeled ``"featured": true`` (in order)."""
+    if not isinstance(block, dict):
+        return []
+    out: list[str] = []
+    for m in block.get("models", []):
+        if isinstance(m, dict) and m.get("featured"):
+            mid = str(m.get("id") or "").strip()
+            if mid:
+                out.append(mid)
+    return out
+
+
+def get_featured_models(provider: str) -> list[str]:
+    """Return the manifest's ``featured`` model ids for ``provider`` — cache only.
+
+    Aggregator providers (nous, openrouter) carry dozens of models across many
+    labs; the manifest marks a curated shortlist (one flagship per lab) with
+    ``"featured": true`` so pickers can default to those instead of the whole
+    catalog. Every non-featured model stays reachable via search / show-all.
+
+    Reads ONLY the in-process copy or the disk cache — never triggers a network
+    fetch, so it is safe on the picker-payload build path. Returns an empty list
+    when no cached manifest exists or the provider has no featured entries, in
+    which case callers fall back to showing the full (or top-N) list.
+    """
+    if _catalog_cache is not None:
+        found = _featured_models_from_block(
+            _catalog_cache.get("providers", {}).get(provider)
+        )
+        if found:
+            return found
+    disk_data, _mtime = _read_disk_cache()
+    if disk_data is not None:
+        return _featured_models_from_block(
+            disk_data.get("providers", {}).get(provider)
+        )
+    return []
+
+
 def seed_cache_from_checkout(project_root: "Path | str") -> bool:
     """Overwrite the disk cache with the catalog shipped in a local checkout.
 

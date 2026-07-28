@@ -120,6 +120,7 @@ def build_models_payload(
     canonical_order: bool = False,
     pricing: bool = False,
     capabilities: bool = False,
+    featured: bool = False,
     force_fresh_nous_tier: bool = False,
     refresh: bool = False,
     probe_custom_providers: bool = True,
@@ -152,6 +153,11 @@ def build_models_payload(
       ``{model: {fast, reasoning}}`` so pickers can gate the model-options
       controls (fast toggle / reasoning) to what each model actually
       supports, instead of offering knobs the backend would reject.
+    - ``featured``: add a per-row ``featured_models`` list — the manifest's
+      curated shortlist (one flagship per lab) for aggregator providers that
+      serve dozens of models. Pickers default their visible set to these; the
+      rest of ``models`` stays reachable via search / show-all. Empty for
+      providers with no featured entries (callers fall back to top-N).
     - ``force_fresh_nous_tier``: bypass the short Nous free-tier cache when
       selecting Portal-recommended Nous models and applying tier gating. Keep
       this false for UI picker opens; explicit auth/model flows can opt in
@@ -262,6 +268,8 @@ def build_models_payload(
         _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
     if capabilities:
         _apply_capabilities(rows)
+    if featured:
+        _apply_featured(rows)
 
     return {
         "providers": rows,
@@ -296,6 +304,7 @@ def build_model_options_payload(
         canonical_order=True,
         pricing=True,
         capabilities=True,
+        featured=True,
         refresh=refresh,
         probe_custom_providers=refresh,
         probe_current_custom_provider=not refresh,
@@ -426,6 +435,29 @@ def _apply_capabilities(rows: list[dict]) -> None:
             }
 
         row["capabilities"] = caps
+
+
+def _apply_featured(rows: list[dict]) -> None:
+    """Attach a ``featured_models`` list to each provider row from the manifest.
+
+    Only aggregator providers (nous, openrouter) publish a featured shortlist —
+    they serve dozens of models across many labs, so a flat "top-N" default
+    would drop whole labs from the picker. Providers with no manifest entry get
+    an empty list and callers fall back to their existing top-N behaviour. The
+    list is filtered to models the row actually carries, so a featured id that a
+    given account can't see (tier gating, live-catalog drift) never appears as a
+    phantom row.
+    """
+    from hermes_cli.model_catalog import get_featured_models
+
+    for row in rows:
+        slug = str(row.get("slug") or "").strip().lower()
+        featured = get_featured_models(slug)
+        if not featured:
+            row["featured_models"] = []
+            continue
+        available = set(row.get("models") or [])
+        row["featured_models"] = [m for m in featured if m in available]
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────

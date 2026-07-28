@@ -405,6 +405,84 @@ class TestProviderOverride:
         assert result == [("override/model", "custom")]
 
 
+def _featured_manifest() -> dict:
+    """Manifest with per-lab ``featured`` flags on a subset of ids."""
+    return {
+        "version": 1,
+        "updated_at": "2026-07-28T00:00:00Z",
+        "metadata": {"source": "test"},
+        "providers": {
+            "nous": {
+                "metadata": {"display_name": "Nous Portal"},
+                "models": [
+                    {"id": "anthropic/opus", "featured": True},
+                    {"id": "anthropic/haiku"},
+                    {"id": "google/gemini", "featured": True},
+                    {"id": "x-ai/grok"},
+                ],
+            },
+        },
+    }
+
+
+class TestGetFeaturedModels:
+    def test_returns_featured_ids_in_order(self, isolated_home):
+        from hermes_cli import model_catalog
+
+        with patch.object(
+            model_catalog, "_fetch_manifest", return_value=_featured_manifest()
+        ):
+            model_catalog.get_catalog(force_refresh=True)
+
+        assert model_catalog.get_featured_models("nous") == [
+            "anthropic/opus",
+            "google/gemini",
+        ]
+
+    def test_empty_for_provider_without_featured_entries(self, isolated_home):
+        from hermes_cli import model_catalog
+
+        # The default valid manifest marks nothing featured.
+        with patch.object(
+            model_catalog, "_fetch_manifest", return_value=_valid_manifest()
+        ):
+            model_catalog.get_catalog(force_refresh=True)
+
+        assert model_catalog.get_featured_models("nous") == []
+
+    def test_empty_for_unknown_provider(self, isolated_home):
+        from hermes_cli import model_catalog
+
+        with patch.object(
+            model_catalog, "_fetch_manifest", return_value=_featured_manifest()
+        ):
+            model_catalog.get_catalog(force_refresh=True)
+
+        assert model_catalog.get_featured_models("deepseek") == []
+
+    def test_empty_when_no_cached_manifest(self, isolated_home):
+        from hermes_cli import model_catalog
+
+        # No fetch, no disk cache — never raises, returns empty.
+        with patch.object(model_catalog, "_fetch_manifest", return_value=None):
+            assert model_catalog.get_featured_models("nous") == []
+
+    def test_shipped_catalog_marks_one_flagship_per_lab(self, isolated_home):
+        """Invariant: every featured id in the shipped manifest is also a real
+        entry in that provider's model list (no phantom featured ids)."""
+        from hermes_cli import model_catalog
+
+        repo_root = Path(__file__).resolve().parents[2]
+        assert model_catalog.seed_cache_from_checkout(repo_root)
+
+        for provider in ("nous", "openrouter"):
+            featured = model_catalog.get_featured_models(provider)
+            assert featured, f"{provider} should ship a featured shortlist"
+            block = model_catalog._get_provider_block(provider)
+            ids = {m["id"] for m in (block or {}).get("models", [])}
+            assert set(featured) <= ids
+
+
 class TestIntegrationWithModelsModule:
     """Exercise the fallback paths via the real callers in hermes_cli.models."""
 
