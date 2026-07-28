@@ -145,13 +145,34 @@ _mcp_stderr_log_fh: Optional[Any] = None
 _mcp_stderr_log_lock = threading.Lock()
 
 
-def _get_mcp_stderr_log() -> Any:
-    """Return a shared append-mode file handle for MCP subprocess stderr.
+def _drain_mcp_stderr(read_fd: int, destination: Any) -> None:
+    """Scrub pipe input line-by-line before it reaches the stderr log."""
+    from agent.redact import force_redact_url_credentials
 
-    Opened once per process and reused for every stdio server.  Must have a
-    real OS-level file descriptor (``fileno()``) because asyncio's subprocess
-    machinery wires the child's stderr directly to that fd.  Falls back to
-    ``/dev/null`` if opening the log file fails.
+    try:
+        with os.fdopen(
+            read_fd, "r", encoding="utf-8", errors="replace", buffering=1
+        ) as source:
+            for line in source:
+                try:
+                    safe_line = force_redact_url_credentials(line)
+                except Exception:
+                    safe_line = "[MCP stderr redaction failed]\n"
+                try:
+                    destination.write(safe_line)
+                    destination.flush()
+                except Exception:
+                    return
+    except Exception:
+        return
+
+
+def _get_mcp_stderr_log() -> Any:
+    """Return a shared pipe writer for MCP subprocess stderr.
+
+    A daemon reader force-scrubs every line before appending it to the shared
+    log. The returned writer has a real fd for asyncio subprocess wiring.
+    Setup failure falls closed to ``/dev/null``.
     """
     global _mcp_stderr_log_fh
     with _mcp_stderr_log_lock:
@@ -165,18 +186,26 @@ def _get_mcp_stderr_log() -> Any:
             # Line-buffered so server output lands on disk promptly; errors=
             # "replace" tolerates garbled binary output from misbehaving
             # servers.
-            fh = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)
-            # Sanity-check: confirm a real fd is available before we commit.
-            fh.fileno()
-            _mcp_stderr_log_fh = fh
+            destination = open(
+                log_path, "a", encoding="utf-8", errors="replace", buffering=1
+            )
+            read_fd, write_fd = os.pipe()
+            writer = os.fdopen(write_fd, "w", encoding="utf-8", errors="replace")
+            writer.fileno()
+            reader = threading.Thread(
+                target=_drain_mcp_stderr,
+                args=(read_fd, destination),
+                name="mcp-stderr-redactor",
+                daemon=True,
+            )
+            reader.start()
+            _mcp_stderr_log_fh = writer
         except Exception as exc:  # pragma: no cover — best-effort fallback
             logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
             try:
                 _mcp_stderr_log_fh = open(os.devnull, "w", encoding="utf-8")
             except Exception:
-                # Last resort: the real stderr.  Not ideal for TUI users but
-                # it matches pre-fix behavior.
-                _mcp_stderr_log_fh = sys.stderr
+                raise RuntimeError("no safe MCP stderr sink is available") from exc
         return _mcp_stderr_log_fh
 
 
