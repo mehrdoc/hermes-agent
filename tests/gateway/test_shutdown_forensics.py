@@ -152,6 +152,30 @@ class TestFormatters:
 
 class TestSpawnAsyncDiagnostic:
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    def test_scrubs_collected_output_before_append(self, tmp_path, monkeypatch):
+        fixture = "fixture-shutdown-query-value"
+        raw_path = tmp_path / "old-direct-write.log"
+        raw_path.write_text(
+            f"proc --endpoint=/health?apiKey={fixture}&probe=ready\n",
+            encoding="utf-8",
+        )
+        assert fixture in raw_path.read_text(encoding="utf-8")
+
+        monkeypatch.setattr(
+            sf,
+            "_SHUTDOWN_DIAGNOSTIC_SCRIPT",
+            f"printf '%s\\n' 'proc --endpoint=/health?apiKey={fixture}&probe=ready'",
+        )
+        log_path = tmp_path / "diag.log"
+        pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=3.0)
+        assert pid is not None and pid > 0
+        os.waitpid(pid, 0)
+
+        contents = log_path.read_text(encoding="utf-8")
+        assert fixture not in contents
+        assert "/health?apiKey=***&probe=ready" in contents
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
         log_path = tmp_path / "diag.log"
         pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=3.0)

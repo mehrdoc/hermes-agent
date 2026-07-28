@@ -4,7 +4,12 @@ import logging
 
 import pytest
 
-from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import (
+    force_redact_url_credentials,
+    redact_cdp_url,
+    redact_sensitive_text,
+    RedactingFormatter,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -589,6 +594,22 @@ class TestWebUrlsNotRedacted:
 
 
 class TestStrictUrlCredentialRedaction:
+    def test_forced_helper_masks_full_and_relative_urls_without_global_opt_in(self):
+        fixture = "fixture-query-value"
+        text = (
+            f"full=https://service.test/run?apiKey={fixture}&view=public "
+            f"relative=/run?token={fixture}&mode=summary"
+        )
+
+        # Ordinary agent/tool text deliberately preserves actionable URLs.
+        assert redact_sensitive_text(text) == text
+
+        result = force_redact_url_credentials(text)
+
+        assert fixture not in result
+        assert "https://service.test/run?apiKey=***&view=public" in result
+        assert "/run?token=***&mode=summary" in result
+
     @pytest.mark.parametrize(
         ("text", "secret", "expected"),
         [

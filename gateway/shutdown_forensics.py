@@ -27,6 +27,21 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+_SHUTDOWN_DIAGNOSTIC_SCRIPT = (
+    "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
+    "echo '--- ps auxf (top 60 by cpu) ---'; "
+    "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
+    "echo '--- pstree of self ---'; "
+    f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
+    "echo '--- /proc/loadavg ---'; "
+    "cat /proc/loadavg 2>/dev/null || true; "
+    "echo '--- recent dmesg (oom/killed) ---'; "
+    "dmesg -T 2>/dev/null | tail -20 || "
+    "journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true"
+)
+_MAX_DIAGNOSTIC_BYTES = 256 * 1024
+
+
 _SIGNAL_NAME_BY_NUM: Dict[int, str] = {}
 for _name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2"):
     _val = getattr(signal, _name, None)
@@ -226,54 +241,57 @@ def spawn_async_diagnostic(
     if sys.platform == "win32":
         return None
 
-    script = (
-        f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
-        "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
-        "echo '--- ps auxf (top 60 by cpu) ---'; "
-        "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
-        "echo '--- pstree of self ---'; "
-        f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
-        "echo '--- /proc/loadavg ---'; "
-        "cat /proc/loadavg 2>/dev/null || true; "
-        "echo '--- recent dmesg (oom/killed) ---'; "
-        "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
-        "echo '=== end ==='"
+    child_code = """
+import subprocess
+import sys
+from agent.redact import force_redact_url_credentials
+
+path, signal_name, timeout_text, limit_text, script = sys.argv[1:]
+marker = "[shutdown diagnostic redaction failed]\\n"
+try:
+    bounded_script = f"{{ {script}; }} | head -c {int(limit_text)}"
+    completed = subprocess.run(
+        ["timeout", timeout_text, "bash", "-c", bounded_script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=float(timeout_text) + 1.0,
+        check=False,
     )
+    raw = completed.stdout[:int(limit_text)].decode("utf-8", errors="replace")
+    framed = (
+        f"=== shutdown diagnostic @ {signal_name} ===\\n"
+        f"{raw}\\n=== end ===\\n"
+    )
+    output = force_redact_url_credentials(framed)
+except Exception:
+    output = marker
+try:
+    with open(path, "a", encoding="utf-8", errors="replace") as fh:
+        fh.write(output)
+except Exception:
+    pass
+"""
 
     try:
-        # Open the log file in append mode and let the subprocess inherit.
-        # We use os.O_APPEND so concurrent diagnostics from rapid signals
-        # don't trample each other.
-        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    except OSError:
-        return None
-
-    try:
-        # Detach from our process group so the subprocess survives even
-        # if systemd kills our cgroup with KillMode=control-group (which
-        # would also reap us anyway, but defense in depth).  Without
-        # start_new_session, a SIGKILL on our cgroup takes the diag down
-        # before it can flush.
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
-            stdout=fd,
-            stderr=subprocess.STDOUT,
+            [
+                sys.executable,
+                "-c",
+                child_code,
+                str(log_path),
+                signal_name,
+                f"{timeout_seconds:.0f}",
+                str(_MAX_DIAGNOSTIC_BYTES),
+                _SHUTDOWN_DIAGNOSTIC_SCRIPT,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
             close_fds=True,
         )
     except (FileNotFoundError, OSError):
-        try:
-            os.close(fd)
-        except OSError:
-            pass
         return None
-    finally:
-        # Subprocess inherited the fd; we can drop our handle.
-        try:
-            os.close(fd)
-        except OSError:
-            pass
 
     return proc.pid
 

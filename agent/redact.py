@@ -542,6 +542,21 @@ def _redact_strict_url_credentials(text: str) -> str:
     return _STRICT_URL_USERINFO_RE.sub(_redact_userinfo, text)
 
 
+def force_redact_url_credentials(value: object) -> str:
+    """Force-redact credentials in URL references at a log write boundary.
+
+    Unlike ordinary agent/tool redaction, this helper always masks
+    credential-named query values (including relative request targets) and
+    URL userinfo. It is intentionally explicit so normal actionable URLs keep
+    their existing pass-through behavior.
+    """
+    return redact_sensitive_text(
+        "" if value is None else str(value),
+        force=True,
+        redact_url_credentials=True,
+    )
+
+
 def redact_cdp_url(value: object) -> str:
     """Mask secrets in a CDP/browser endpoint URL before it is logged.
 
