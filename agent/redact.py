@@ -7,6 +7,7 @@ Short tokens (< 18 chars) are fully masked. Longer tokens preserve
 the first 6 and last 4 characters for debuggability.
 """
 
+import json
 import logging
 import os
 import re
@@ -592,6 +593,32 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
+def _redact_sensitive_json(value) -> bool:
+    """Iteratively replace sensitive-key values in a parsed JSON value."""
+    changed = False
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            for key, child in current.items():
+                if (
+                    key.casefold() in _SENSITIVE_BODY_KEYS
+                    and not (
+                        isinstance(child, str)
+                        and _ENV_LOOKUP_VALUE_RE.match(child)
+                    )
+                ):
+                    current[key] = "***"
+                    changed = True
+                elif isinstance(child, (dict, list)):
+                    pending.append(child)
+        elif isinstance(current, list):
+            pending.extend(
+                child for child in current if isinstance(child, (dict, list))
+            )
+    return changed
+
+
 def _mask_token_nonreusable(token: str) -> str:
     """Redact a prefix-matched credential to a NON-REUSABLE sentinel.
 
@@ -677,6 +704,17 @@ def redact_sensitive_text(
     # paths either (it's config/data, not log lines).
     if file_read:
         code_file = True
+
+    # Complete JSON documents can contain sensitive keys at arbitrary depth or
+    # own structured values that the flat JSON-field regex cannot match.
+    if not code_file:
+        try:
+            parsed_json = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            pass
+        else:
+            if _redact_sensitive_json(parsed_json):
+                text = json.dumps(parsed_json)
 
     # Known prefixes (sk-, ghp_, etc.) — gate on substring presence
     if _has_known_prefix_substring(text):

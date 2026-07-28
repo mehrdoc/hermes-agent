@@ -1,5 +1,6 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
+import json
 import logging
 
 import pytest
@@ -229,6 +230,71 @@ class TestJsonFields:
         text = '{"name": "John", "model": "gpt-4"}'
         result = redact_sensitive_text(text)
         assert result == text
+
+    def test_recursively_redacts_nested_token_object_through_dict_and_list(self):
+        text = json.dumps({
+            "response": {
+                "items": [{
+                    "credentials": {
+                        "token": {
+                            "opaque": "fixture-material-alpha",
+                            "parts": ["fixture-material-beta"],
+                        },
+                        "label": "kept",
+                    },
+                }],
+            },
+        })
+
+        result = json.loads(redact_sensitive_text(text))
+
+        assert result == {
+            "response": {
+                "items": [{
+                    "credentials": {
+                        "token": "***",
+                        "label": "kept",
+                    },
+                }],
+            },
+        }
+
+    def test_recursively_redacts_case_insensitive_keys_and_complete_values(self):
+        text = json.dumps({
+            "items": [
+                {"PaSsWoRd": ["fixture-list-material", {"kept": False}]},
+                {"nested": {"AUTHORIZATION": 12345}},
+            ],
+        })
+
+        result = json.loads(redact_sensitive_text(text))
+
+        assert result == {
+            "items": [
+                {"PaSsWoRd": "***"},
+                {"nested": {"AUTHORIZATION": "***"}},
+            ],
+        }
+
+    def test_recursive_json_exact_key_near_misses_remain_byte_for_byte(self):
+        text = '{\n  "token_count": 7,\n  "session_id": "fixture-session",\n  "secretary": "fixture-name"\n}'
+
+        assert redact_sensitive_text(text) == text
+
+    def test_recursive_json_respects_code_file_bypass(self):
+        text = '{"outer": {"token": {"example": "fixture-source-code"}}}'
+
+        assert redact_sensitive_text(text, code_file=True) == text
+
+    def test_invalid_json_keeps_existing_flat_field_fallback(self):
+        text = 'prefix {"outer": {"token": "fixture-flat-value"}} suffix'
+
+        result = redact_sensitive_text(text)
+
+        assert "fixture-flat-value" not in result
+        assert result.startswith('prefix {"outer": {"token": "')
+        assert "..." in result
+        assert result.endswith('"}} suffix')
 
 
 class TestAuthHeaders:
